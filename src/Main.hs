@@ -36,8 +36,8 @@ getConfig = do
   configFileSource :: [IO Source] <- do
     yes <- doesFileExist configFile
     if yes
-        then (:[]) . return . ConfigFileYaml <$> SBS.readFile configFile
-        else return []
+      then (:[]) . return . ConfigFileYaml <$> SBS.readFile configFile
+      else return []
 
   sources <- sequence $
     configFileSource ++
@@ -56,6 +56,10 @@ main = do
 
   cabalFileContents <- readPackageDescription deafening cabalFile
   print cabalFileContents
+
+  -- the cabal config file parser lives in cabal-install in
+  -- Distribution.Client.Config, which is not exposed in a library.
+  -- so what this was all about won't work as simply as i hoped...
 
 --  freezeFileContents :: Int <- _ deafening freezeFile
 --  print freezeFileContents
