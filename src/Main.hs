@@ -10,11 +10,12 @@
 import Control.Applicative
 import Control.Exception (throwIO)
 import Control.Lens
-import Control.Monad (void)
+import Control.Monad (void, forM)
 import Data.Char (toLower)
 import Data.Configifier
 import Data.Function (on)
-import Data.List (intercalate, sortBy)
+import Data.Functor.Infix ((<$$>))
+import Data.List (intercalate, sortBy, isPrefixOf)
 import Data.Maybe (catMaybes)
 import Data.String.Conversions
 import Data.Typeable
@@ -39,8 +40,8 @@ type Config = Tagged ConfigDesc
 type ConfigDesc = ToConfigCode Config'
 
 type Config' =
-      ("cabalFile"  :> ST)
-  :*> ("freezeFile" :> ST)
+      Maybe ("cabalFile"   :> ST)
+  :*>       ("freezeFiles" :> [ST])
 
 getConfig :: IO Config
 getConfig = do
@@ -62,8 +63,8 @@ getConfig = do
 main' :: IO ()
 main' = do
   config :: Config <- getConfig
-  let cabalFile  :: FilePath = cs $ config >>. (Proxy :: Proxy '["cabalFile"])
-      freezeFile :: FilePath = cs $ config >>. (Proxy :: Proxy '["freezeFile"])
+  let Just cabalFile :: Maybe FilePath = cs <$> config >>. (Proxy :: Proxy '["cabalFile"])
+      freezeFiles :: [FilePath] = cs <$> config >>. (Proxy :: Proxy '["freezeFiles"])
 
   cabalFileContents <- readPackageDescription deafening cabalFile
   print cabalFileContents
@@ -87,15 +88,23 @@ main' = do
 
 main :: IO ()
 main = do
-  let stackageUrl :: String = "https://www.stackage.org/lts-3.5/cabal.config"
-  putStrLn $ "  -- constraints losely based on " ++ stackageUrl
-  Right versionFreeze <- (parseFreezeFile . cs) . (^. responseBody) <$> get stackageUrl
-  -- Right versionFreeze <- (parseFreezeFile . cs) <$> readFile "cabal.config"
-  -- print r
-  -- print $ Map.size versionFreeze
+  config :: Config <- getConfig
+  let freezeFiles :: [FilePath] = cs <$> config >>. (Proxy :: Proxy '["freezeFiles"])
 
-  i :: SBS <- cs <$> getContents
-  let Right (deps :: [ST]) = parseBuildDependsBlob i
+  versionFreeze <- mconcat . reverse <$> forM freezeFiles (\ freezeFile -> do
+    putStrLn $ "  -- source: " ++ freezeFile
+
+    versionFreezeStr :: SBS
+      <- if "http://" `isPrefixOf` freezeFile || "https://" `isPrefixOf` freezeFile
+           then cs . (^. responseBody) <$> get freezeFile
+           else SBS.readFile freezeFile
+
+    let Right versionFreezePart = parseFreezeFile versionFreezeStr
+    -- print versionFreezePart
+    -- print $ Map.size versionFreezePart
+    return versionFreezePart)
+
+  Right (deps :: [ST]) <- parseBuildDependsBlob . cs <$> getContents
   putStrLn . showConstraints $ injectConstraints deps versionFreeze
 
 
@@ -165,7 +174,7 @@ injectConstraints packages freeze = Map.fromList $ f <$> packages
     f :: ST -> (ST, VersionConstraint)
     f package = (package,) $ case Map.lookup package freeze of
         Just v -> mkConstraint v
-        Nothing -> Left $ Version [] []  -- error $ "injectConstraints: package " <> show package <> " not found in freeze file."
+        Nothing -> error $ "injectConstraints: package " <> show package <> " not found in freeze files."
 
 mkConstraint :: Version -> VersionConstraint
 mkConstraint (Version v@(a:b:_) _) = Right
@@ -178,7 +187,7 @@ showConstraints :: VersionConstraints -> String
 showConstraints constraints = "      " <> intercalate "\n    , " (f <$> sort' (Map.toList constraints))
   where
     f :: (ST, VersionConstraint) -> String
-    f (p, (Left (Version [] _))) = cs p
+    -- f (p, (Left (Version [] _))) = cs p
     f (p, (Left v)) = cs p <> " ==" <> showVersion v
     f (p, (Right (LowerBound l InclusiveBound, UpperBound u ExclusiveBound))) =
         cs p <> " >=" <> showVersion l <> " && <" <> showVersion u
